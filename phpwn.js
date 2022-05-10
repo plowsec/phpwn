@@ -8,15 +8,14 @@ const currentFile = "./example.php";
 let g_methodName = "";
 let g_currentCls = null;
 
-function getClassFromFile(parsedProgram) {
+function findNodesWithKind(parsedProgram, kind) {
 
-  let queue = [];
-  let foundClasses = [];
+    let queue = [];
+    let foundItems = [];
 
     for (index in parsedProgram.children) {
         let child = parsedProgram.children[index];
         queue.push(child);
-
     }
 
     while (queue.length > 0) {
@@ -30,21 +29,41 @@ function getClassFromFile(parsedProgram) {
             }
         }
 
-        if (currentChild.kind === "class") {
-            console.log("Found class: " + currentChild);
-            foundClasses.push(currentChild);
+        if (currentChild.kind === kind) {
+            //console.log(`Found ${kind}: ${currentChild}`);
+            foundItems.push(currentChild);
         }
     }
 
-    return foundClasses;
+    return foundItems;
 }
 
-function findClassByParentName(classes, expectedName) {
+
+function getClassFromFile(parsedProgram) {
+
+  return findNodesWithKind(parsedProgram, "class");
+}
+
+function findClassByParentName(classes, expectedName, namespaces) {
 
     let foundCls = [];
+    let shortName = "";
+    if(expectedName.indexOf("\\")>-1) {
+        console.log("Resolving namespace...");
+
+        // get namespace from absolute path
+        let expectedNamespace = expectedName.substring(0,expectedName.lastIndexOf("\\"));
+        for(namespace of namespaces) {
+            if(namespace.name === expectedNamespace) {
+                shortName = expectedName.substring(expectedName.lastIndexOf("\\")+1);
+            }
+        }
+    } else {
+        shortName = expectedName;
+    }
 
     for(cls of classes) {
-        if("extends" in cls && cls.extends.name === expectedName) {
+        if("extends" in cls && cls.extends.name === shortName) {
 
             console.log("Found class that inherits from " + expectedName + " : " + cls.name.name);
             foundCls.push(cls);
@@ -103,37 +122,41 @@ function findMethodsByNumberOfArguments(allMethods, numberOfArgs) {
 }
 
 function extractLocation(file, loc) {
-    let lines = [];
-    const allFileContents = fs.readFileSync(file, 'utf-8');
-    allFileContents.split(/\r?\n/).forEach(line =>  {
-        lines.push(line);
-    });
+   try {
 
-    let start = loc.start.line;
-    let end = loc.end.line;
+       let lines = [];
+       const allFileContents = fs.readFileSync(file, 'utf-8');
+       allFileContents.split(/\r?\n/).forEach(line => {
+           lines.push(line);
+       });
 
-    if (start === end) {
-        let line = lines[start-1];
-        let extracted = line.substr(loc.start.column, loc.end.column);
-        return extracted;
-    } else {
-        let result = "";
-        for(let i = start ; i < end ; i++) {
-            let line = lines[i-1];
+       let start = loc.start.line;
+       let end = loc.end.line;
 
-            if(i === 0) {
-                result += line.substr(loc.start.column);
-            } else if(i === end) {
-                result += line.substr(0, loc.end.column);
-            }
-             else{
-                result += line;
-            }
-        }
+       if (start === end) {
+           let line = lines[start - 1];
+           let extracted = line.substr(loc.start.column, loc.end.column);
+           return extracted;
+       } else {
+           let result = "";
+           for (let i = start; i < end; i++) {
+               let line = lines[i - 1];
 
-        //console.log("Extracted result: " + result);
-        return result;
-    }
+               if (i === 0) {
+                   result += line.substr(loc.start.column);
+               } else if (i === end) {
+                   result += line.substr(0, loc.end.column);
+               } else {
+                   result += line;
+               }
+           }
+
+           //console.log("Extracted result: " + result);
+           return result;
+       }
+   }catch(e){
+       return "Could not extract code location: " + e;
+   }
 }
 
 function analyzeCallExpr(child, indentLevel=1) {
@@ -348,6 +371,9 @@ function dispatchChildren(children, indentLevel = 1) {
  */
 function displayCallGraph(method, indentLevel = 0, doPrint=true) {
 
+    if(indentLevel > 10) {
+        return "Too deep";
+    }
     if(!"body" in method || !"children" in method.body) {
         console.error("Uninteresting method: " + method.name.name);
     }
@@ -366,6 +392,168 @@ function displayCallGraph(method, indentLevel = 0, doPrint=true) {
     return message;
 }
 
+function findClassInFile(name, allParsedFiles, namespace) {
+
+    for(let [filename, parsedProgram] of Object.entries(allParsedFiles)) {
+        for(const cls of parsedProgram.classes) {
+            if(cls.name.name === name) {
+                console.log(`Found class ${name} in ${filename}`);
+                let namespaces = getNamespaceFromFile(parsedProgram.parsedProgram);
+                if(namespaces.some(n => (n.name === namespace.name || n.name.substring(1) === namespace.name) || n.name === namespace.name.substring(1))) {
+                    console.log("This is the good one");
+
+                    return allParsedFiles[filename];
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * follow "implements" and "extends" instruction to discover every class a given class inherits from
+ */
+function enumerateAllParentClasses(parsedProgram, cls, allParsedFiles) {
+
+    let parentClasses = [];
+    let currentCls = cls;
+    let currentParent = "";
+    let currentNamespace = "";
+    while("extends" in currentCls && currentCls.extends !== null) {
+        currentParent = currentCls.extends.name;
+        if(currentParent.indexOf("\\") > -1) {
+            currentNamespace = {"name":currentParent.substring(0, currentParent.lastIndexOf("\\"))};
+            currentParent = currentParent.substring(currentParent.lastIndexOf("\\")+1);
+        } else {
+            currentNamespace = getNamespaceFromFile(parsedProgram)[0];
+        }
+        console.log("Current parent: " + currentParent);
+        console.log("Current namespace: " + currentNamespace.name);
+        currentCls = findClassInFile(currentParent, allParsedFiles, currentNamespace).classes[0];
+        console.log("e");
+    }
+
+    return parentClasses;
+}
+
+
+function enumerateAllClassesWithParent(parentFullName, allParsedFiles) {
+
+    let parentNamespace = {"name":""};
+    let currentParent = parentFullName;
+    let currentFqn = "";
+    let foundClasses = [];
+
+    if(parentFullName.indexOf("\\") > -1) {
+        currentFqn = parentFullName;
+        parentNamespace = {"name":currentParent.substring(0, currentParent.lastIndexOf("\\"))};
+        currentParent = parentFullName.substring(parentFullName.lastIndexOf("\\")+1);
+    } else {
+        currentFqn = parentNamespace +"\\"+currentParent;
+    }
+
+    let foundChildren = false;
+    let queue = [];
+    let alreadyAnalyzed = [];
+
+    do {
+        foundChildren = false;
+        for (let [filename, parsedProgram] of Object.entries(allParsedFiles)) {
+
+            if(alreadyAnalyzed.includes(filename))
+                continue;
+
+            for (const cls of parsedProgram.classes) {
+
+                if ("extends" in cls && cls.extends !== null) {
+                    if(cls.extends.resolution === "fqn" && (cls.extends.name === currentFqn) || cls.extends.name.substring(1) === currentFqn || cls.extends.name === currentFqn.substring(1)) {
+                        foundChildren = true;
+                        console.log(`Adding ${cls.name.name} (${filename}) because it inherits from ${currentParent}`);
+                        queue.push({"name": cls.name.name, "data": parsedProgram.parsedProgram});
+                        foundClasses.push(cls);
+                        alreadyAnalyzed.push(filename);
+                    } else if(cls.extends.name === currentParent) {
+                        foundChildren = true;
+                        console.log(`Adding ${cls.name.name} (${filename}) because it inherits from ${currentParent}`);
+                        queue.push({"name": cls.name.name, "data": parsedProgram.parsedProgram});
+                        foundClasses.push(cls);
+                        alreadyAnalyzed.push(filename);
+                    }
+                }
+            }
+        }
+
+        if(queue.length > 0) {
+
+            let item = queue.pop();
+            currentParent = item.name;
+            let namespaces = getNamespaceFromFile(item.data);
+            parentNamespace = namespaces.length < 1 ? "" : namespaces[0];
+            currentFqn = parentNamespace.name +"\\"+currentParent;
+        }
+
+    } while(foundChildren || queue.length > 0);
+
+    return foundClasses;
+}
+
+
+function getNamespaceFromFile(parsedProgram) {
+
+    let namespaces = findNodesWithKind(parsedProgram, "namespace");
+
+    /*if(namespaces.length === 0) {
+        console.error("Not namespace found");
+        return null;
+    } else if(namespaces.length === 1) {
+        return namespaces[0];
+    } else {
+        throw("Too many namespaces, don't know how to handle that");
+    }*/
+    return namespaces;
+}
+
+function *walkSync(dir) {
+    const files = fs.readdirSync(dir, { withFileTypes: true });
+    for (const file of files) {
+        if (file.isDirectory()) {
+            yield* walkSync(path.join(dir, file.name));
+        } else {
+            if(file.name.substring(file.name.lastIndexOf(".")) === ".php") {
+                yield path.join(dir, file.name);
+            }
+        }
+    }
+}
+
+function enumeratePHPFiles(folder) {
+
+    let files = [...walkSync(folder)];
+    return files;
+}
+
+function collectAllClasses(parser) {
+
+    let files = enumeratePHPFiles(__dirname);
+    let parsedFiles = {};
+    for(let file of files) {
+        try {
+            const phpFile = fs.readFileSync(file);
+            let parsedProgram = parser.parseCode(phpFile);
+            let classes = getClassFromFile(parsedProgram);
+            parsedFiles[file] = {
+                "parsedProgram": parsedProgram,
+                "classes": classes
+            };
+        } catch(e) {
+            console.error("File " + file + " could not be parsed.");
+        }
+    }
+
+    return parsedFiles;
+}
+
 function main() {
 
     // initialize a new parser instance
@@ -374,6 +562,7 @@ function main() {
         parser: {
             extractDoc: true,
             php7: true,
+            suppressErrors: true
         },
         ast: {
             withPositions: true,
@@ -383,15 +572,39 @@ function main() {
     const phpFile = fs.readFileSync("./example.php");
     let parsedProgram = parser.parseCode(phpFile);
     let classes = getClassFromFile(parsedProgram);
-    let matchingClasses = findClassByParentName(classes, "AbstractBlock");
-    
+    let namespaces = getNamespaceFromFile(parsedProgram);
+    let matchingClasses = findClassByParentName(classes, "Magento\\Framework\\View\\Element\\AbstractBlock", namespaces);
+    let allParsedFiles = collectAllClasses(parser);
+
+    /*
     for(cls of matchingClasses) {
         g_currentCls = cls;
         let allMethods = enumerateMethods(cls);
         let filteredMethods = findMethodsByNumberOfArguments(allMethods, 0);
         for(method of filteredMethods) {
             displayCallGraph(method);
+
         }
+
+        enumerateAllParentClasses(parsedProgram, cls, allParsedFiles);
+    }*/
+
+    //findClassInFile("AbstractBlock", allParsedFiles, getNamespaceFromFile(parsedProgram)[0]);
+    //enumerateAllClassesWithParent("Magento\\Framework\\DataObject", allParsedFiles);
+    let foundClasses = enumerateAllClassesWithParent("Magento\\Framework\\View\\Element\\AbstractBlock", allParsedFiles);
+    for(let cls of foundClasses) {
+        try{
+            console.log("Exploring class " + cls.name.name);
+            g_currentCls = cls;
+            let allMethods = enumerateMethods(cls);
+            let filteredMethods = findMethodsByNumberOfArguments(allMethods, 0);
+            for(method of filteredMethods) {
+                displayCallGraph(method);
+            }
+        } catch(e) {
+            console.error("Error while exploring " + cls.name.name);
+        }
+        //enumerateAllParentClasses(parsedProgram, cls, allParsedFiles);
     }
 }
 
